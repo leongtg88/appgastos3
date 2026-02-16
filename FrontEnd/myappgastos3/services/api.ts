@@ -1,6 +1,28 @@
 const API_URL = 'https://vtowxdsg1m.execute-api.us-east-2.amazonaws.com/ApiRestGastos';
 
 export const api = {
+  async register(username: string, email: string, password: string) {
+    const response = await fetch(`${API_URL}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password }),
+    });
+    return response.json();
+  },
+
+  async verify(email: string, code: string) {
+    const response = await fetch(`${API_URL}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message || 'Error al verificar');
+    }
+    return data;
+  },
+
   async login(username: string, password: string) {
     const response = await fetch(`${API_URL}/login`, {
       method: 'POST',
