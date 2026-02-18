@@ -1,6 +1,7 @@
 {
     "name": "myappgastos-backend",
     "version": "1.0.0",
+    "type": "module",
     "description": "Backend para app de gastos con AWS Lambda",
     "main": "index.js",
     "scripts": {

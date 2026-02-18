@@ -1,6 +1,6 @@
-import { CognitoIdentityProviderClient, InitiateAuthCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, InitiateAuthCommand, SignUpCommand, ConfirmSignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import jwt from 'jsonwebtoken';
 
 const cognitoClient = new CognitoIdentityProviderClient({ region: 'us-east-2' });
@@ -14,23 +14,32 @@ const headers = {
 };
 
 export const handler = async (event) => {
+  console.log('Event:', JSON.stringify(event)); // Debug
+  
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers };
   }
 
-  const { httpMethod, path } = event;
+  const { httpMethod } = event;
+  // Usar requestContext.path que incluye el stage, o path si no existe
+  const fullPath = event.requestContext?.path || event.path;
+  const actualPath = fullPath.replace('/ApiRestGastos', ''); // Remover stage del path
   
   try {
-    // Rutas de autenticación
-    if (path === '/login' && httpMethod === 'POST') {
+    // Rutas públicas (sin autenticación)
+    if (actualPath === '/login' && httpMethod === 'POST') {
       return await handleLogin(event);
     }
     
-    if (path === '/verify' && httpMethod === 'POST') {
+    if (actualPath === '/register' && httpMethod === 'POST') {
+      return await handleRegister(event);
+    }
+    
+    if (actualPath === '/verify' && httpMethod === 'POST') {
       return await handleVerify(event);
     }
     
-    if (path === '/config' && httpMethod === 'GET') {
+    if (actualPath === '/config' && httpMethod === 'GET') {
       return await handleConfig(event);
     }
 
@@ -41,36 +50,36 @@ export const handler = async (event) => {
     }
 
     // Rutas de usuarios
-    if (path === '/users' && httpMethod === 'GET') {
+    if (actualPath === '/users' && httpMethod === 'GET') {
       return await getUser(userId);
     }
     
-    if (path === '/users' && httpMethod === 'POST') {
+    if (actualPath === '/users' && httpMethod === 'POST') {
       return await createUser(event, userId);
     }
 
     // Rutas de gastos
-    if (path === '/expenses' && httpMethod === 'GET') {
+    if (actualPath === '/expenses' && httpMethod === 'GET') {
       return await getExpenses(userId, event.queryStringParameters);
     }
     
-    if (path === '/expenses' && httpMethod === 'POST') {
+    if (actualPath === '/expenses' && httpMethod === 'POST') {
       return await createExpense(event, userId);
     }
     
-    if (path === '/expenses' && httpMethod === 'PUT') {
+    if (actualPath === '/expenses' && httpMethod === 'PUT') {
       return await updateExpense(event, userId);
     }
     
-    if (path === '/expenses' && httpMethod === 'DELETE') {
+    if (actualPath === '/expenses' && httpMethod === 'DELETE') {
       return await deleteExpense(event, userId);
     }
     
-    if (path === '/expenses/reports' && httpMethod === 'GET') {
+    if (actualPath === '/expenses/reports' && httpMethod === 'GET') {
       return await getReports(userId, event.queryStringParameters);
     }
 
-    return { statusCode: 404, headers, body: JSON.stringify({ error: 'Ruta no encontrada' }) };
+    return { statusCode: 404, headers, body: JSON.stringify({ error: 'Ruta no encontrada', path: actualPath }) };
     
   } catch (error) {
     return {
@@ -81,45 +90,141 @@ export const handler = async (event) => {
   }
 };
 
-// Función de login existente
+// Función de login con Cognito
 async function handleLogin(event) {
   const { username, password } = JSON.parse(event.body);
   
-  const authParams = {
-    AuthFlow: 'USER_PASSWORD_AUTH',
-    ClientId: process.env.COGNITO_CLIENT_ID,
-    AuthParameters: {
-      USERNAME: username,
-      PASSWORD: password
-    }
-  };
+  try {
+    const authParams = {
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      AuthParameters: {
+        USERNAME: username,
+        PASSWORD: password
+      }
+    };
 
-  const command = new InitiateAuthCommand(authParams);
-  const result = await cognitoClient.send(command);
+    const command = new InitiateAuthCommand(authParams);
+    const result = await cognitoClient.send(command);
+    
+    const token = jwt.sign(
+      { 
+        sub: result.AuthenticationResult.AccessToken,
+        username: username 
+      },
+      'your-jwt-secret',
+      { expiresIn: '24h' }
+    );
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        success: true,
+        token: token,
+        accessToken: result.AuthenticationResult.AccessToken
+      })
+    };
+  } catch (error) {
+    return {
+      statusCode: 401,
+      headers,
+      body: JSON.stringify({ 
+        success: false, 
+        message: error.message || 'Credenciales inválidas' 
+      })
+    };
+  }
+}
+
+async function handleRegister(event) {
+  const { username, email, password } = JSON.parse(event.body);
   
-  const token = jwt.sign(
-    { 
-      sub: result.AuthenticationResult.AccessToken,
-      username: username 
-    },
-    'your-jwt-secret',
-    { expiresIn: '24h' }
-  );
-
-  return {
-    statusCode: 200,
-    headers,
-    body: JSON.stringify({
-      success: true,
-      token: token,
-      accessToken: result.AuthenticationResult.AccessToken
-    })
-  };
+  try {
+    // 1. Registrar en Cognito
+    const signUpCommand = new SignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      Username: email,
+      Password: password,
+      UserAttributes: [
+        { Name: 'email', Value: email },
+        { Name: 'name', Value: username }
+      ]
+    });
+    
+    await cognitoClient.send(signUpCommand);
+    
+    // 2. Crear usuario en DynamoDB
+    const userId = Date.now().toString();
+    const command = new PutCommand({
+      TableName: 'Users',
+      Item: {
+        userId: userId,
+        username,
+        email,
+        createdAt: new Date().toISOString()
+      }
+    });
+    
+    await docClient.send(command);
+    
+    return {
+      statusCode: 201,
+      headers,
+      body: JSON.stringify({
+        success: true,
+        message: 'Usuario registrado exitosamente. Verifica tu email.',
+        userId
+      })
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        success: false,
+        message: error.message
+      })
+    };
+  }
 }
 
 async function handleVerify(event) {
-  // Implementar verificación de token
-  return { statusCode: 200, headers, body: JSON.stringify({ verified: true }) };
+  const { email, code } = JSON.parse(event.body);
+  
+  console.log('Verifying:', { email, code });
+  
+  try {
+    const confirmCommand = new ConfirmSignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      Username: email,
+      ConfirmationCode: code
+    });
+    
+    await cognitoClient.send(confirmCommand);
+    
+    console.log('Verification successful');
+    
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        success: true,
+        message: 'Email verificado exitosamente'
+      })
+    };
+  } catch (error) {
+    console.error('Verification error:', error);
+    
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({
+        success: false,
+        message: error.message
+      })
+    };
+  }
 }
 
 async function handleConfig(event) {
@@ -150,7 +255,7 @@ async function verifyToken(event) {
 async function getUser(userId) {
   const command = new GetCommand({
     TableName: 'Users',
-    Key: { UserId: userId }
+    Key: { userId: userId }
   });
   
   const result = await docClient.send(command);
@@ -167,7 +272,7 @@ async function createUser(event, userId) {
   const command = new PutCommand({
     TableName: 'Users',
     Item: {
-      UserId: userId,
+      userId: userId,
       ...userData,
       createdAt: new Date().toISOString()
     }

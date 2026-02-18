@@ -18,9 +18,8 @@ export default function VerifyScreen() {
             console.log('Calling api.verify with:', email, code);
             const response = await api.verify(email as string, code);
             console.log('Verify response:', response);
-            Alert.alert('¡Éxito!', 'Email verificado correctamente. Ahora puedes iniciar sesión.', [
-                { text: 'Ir al Login', onPress: () => router.push('/login') }
-            ]);
+            // Redirigir automáticamente al login después de verificación exitosa
+            router.push('/login');
         } catch (error: any) {
             console.error('Verify error:', error);
             Alert.alert('Error', error.message || 'Ocurrió un error al verificar el código');
